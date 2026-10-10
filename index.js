@@ -1,52 +1,55 @@
-
+```javascript
 const express = require("express");
 const cors = require("cors");
 const consumet = require("@consumet/extensions");
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
 const ANIME = consumet.ANIME || consumet.default?.ANIME;
 
 if (!ANIME) {
-  throw new Error("Consumet did not expose its ANIME providers.");
+  throw new Error(
+    "Consumet ANIME providers were not found. Check @consumet/extensions."
+  );
 }
 
 console.log("Available anime providers:", Object.keys(ANIME));
 
+const providerName = process.env.ANIME_PROVIDER || "AnimeKai";
+const ProviderClass = ANIME[providerName];
 
-const providerName = process.env.ANIME_PROVIDER || "Gogoanime";
-
-const ProviderClass =
-  ANIME[providerName] ||
-  ANIME.Gogoanime ||
-  ANIME.AnimePahe ||
-  Object.values(ANIME).find(
-    (provider) => typeof provider === "function"
+if (typeof ProviderClass !== "function") {
+  throw new Error(
+    `Provider "${providerName}" is unavailable. Available providers: ${Object.keys(
+      ANIME
+    ).join(", ")}`
   );
-
-
-if (!ProviderClass) {
-  throw new Error("No usable anime provider was found.");
 }
 
 const animeProvider = new ProviderClass();
 
-console.log("Selected anime provider:", providerName);
+console.log("Selected provider:", providerName);
 console.log("Initialized provider:", animeProvider.name);
 
-async function runWithTimeout(promise, label, ms = 25000) {
+const REQUEST_TIMEOUT_MS = 25000;
+
+async function runWithTimeout(operation, label) {
   let timer;
 
   try {
     return await Promise.race([
-      promise,
+      Promise.resolve().then(operation),
       new Promise((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${label} timed out after ${ms}ms`)),
-          ms
-        );
+        timer = setTimeout(() => {
+          reject(
+            new Error(
+              `${label} timed out after ${REQUEST_TIMEOUT_MS}ms`
+            )
+          );
+        }, REQUEST_TIMEOUT_MS);
       }),
     ]);
   } finally {
@@ -54,85 +57,119 @@ async function runWithTimeout(promise, label, ms = 25000) {
   }
 }
 
+function sendProviderError(res, label, error) {
+  console.error(
+    `[${label}] Provider failed:`,
+    error?.stack || error
+  );
+
+  return res.status(502).json({
+    error: `${label} provider request failed.`,
+    details: error?.message || "Unknown provider error",
+    provider: animeProvider.name || providerName,
+  });
+}
+
+// Health check
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
     message: "Anime Scraper Backend is running!",
-    provider: animeProvider.name,
+    provider: animeProvider.name || providerName,
+    availableProviders: Object.keys(ANIME),
   });
 });
 
+// Search anime
 app.get("/anime/search/:query", async (req, res) => {
-  const query = req.params.query;
+  const query = req.params.query?.trim();
+
+  if (!query) {
+    return res.status(400).json({
+      error: "Search query cannot be empty.",
+    });
+  }
+
   console.log(`[SEARCH] Started: ${query}`);
 
   try {
     const results = await runWithTimeout(
-      animeProvider.search(query),
+      () => animeProvider.search(query),
       `Search "${query}"`
     );
 
-    console.log(
-      `[SEARCH] Success: ${query}; result count: ${
-        Array.isArray(results?.results)
-          ? results.results.length
-          : Array.isArray(results)
-            ? results.length
-            : "unknown"
-      }`
-    );
+    console.log(`[SEARCH] Successful: ${query}`);
 
-    res.json(results);
+    return res.json(results);
   } catch (error) {
-    console.error("[SEARCH] Provider failed:", error?.stack || error);
-
-    res.status(502).json({
-      error: "Anime search provider failed.",
-      details: error?.message || "Unknown provider error",
-      provider: animeProvider.name || providerName,
-    });
+    return sendProviderError(res, "SEARCH", error);
   }
 });
 
+// Fetch anime details and episodes
 app.get("/anime/info/:id", async (req, res) => {
+  const id = req.params.id;
+
+  console.log(`[INFO] Started: ${id}`);
+
   try {
     const info = await runWithTimeout(
-      animeProvider.fetchAnimeInfo(req.params.id),
-      "Fetch anime info"
+      () => animeProvider.fetchAnimeInfo(id),
+      `Fetch anime info "${id}"`
     );
 
-    res.json(info);
-  } catch (error) {
-    console.error("[INFO] Provider failed:", error?.stack || error);
+    console.log(`[INFO] Successful: ${id}`);
 
-    res.status(502).json({
-      error: "Failed to fetch anime info.",
-      details: error?.message || "Unknown provider error",
-    });
+    return res.json(info);
+  } catch (error) {
+    return sendProviderError(res, "INFO", error);
   }
 });
 
+// Fetch episode stream sources
 app.get("/anime/watch/:episodeId", async (req, res) => {
+  const episodeId = req.params.episodeId;
+
+  console.log(`[WATCH] Started: ${episodeId}`);
+
   try {
     const streamInfo = await runWithTimeout(
-      animeProvider.fetchEpisodeSources(req.params.episodeId),
-      "Fetch episode sources"
+      () => animeProvider.fetchEpisodeSources(episodeId),
+      `Fetch episode sources "${episodeId}"`
     );
 
-    console.log("[WATCH] Stream sources fetched.");
-    res.json(streamInfo);
-  } catch (error) {
-    console.error("[WATCH] Provider failed:", error?.stack || error);
+    console.log(`[WATCH] Successful: ${episodeId}`);
 
-    res.status(502).json({
-      error: "Failed to extract video stream.",
-      details: error?.message || "Unknown provider error",
-    });
+    return res.json(streamInfo);
+  } catch (error) {
+    return sendProviderError(res, "WATCH", error);
   }
+});
+
+// Unknown routes
+app.use((req, res) => {
+  res.status(404).json({
+    error: "Route not found.",
+    path: req.originalUrl,
+  });
+});
+
+// General error handler
+app.use((error, req, res, next) => {
+  console.error("[SERVER] Unexpected error:", error?.stack || error);
+
+  if (res.headersSent) {
+    return next(error);
+  }
+
+  return res.status(500).json({
+    error: "Internal server error.",
+  });
 });
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server listening on port ${PORT}`);
 });
+```
