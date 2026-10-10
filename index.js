@@ -18,21 +18,25 @@ if (!ANIME) {
 
 console.log("Available anime providers:", Object.keys(ANIME));
 
+
 const providerName = process.env.ANIME_PROVIDER || "AnimeKai";
 const ProviderClass = ANIME[providerName];
 
 if (typeof ProviderClass !== "function") {
-  throw new Error(
-    `Provider "${providerName}" is unavailable. Available providers: ${Object.keys(
-      ANIME
-    ).join(", ")}`
+  console.error(
+    "Provider unavailable:",
+    providerName,
+    "Available providers:",
+    Object.keys(ANIME).join(", ")
   );
+  throw new Error("Configured anime provider is unavailable.");
 }
 
 const animeProvider = new ProviderClass();
 
 console.log("Selected provider:", providerName);
 console.log("Initialized provider:", animeProvider.name);
+
 
 const REQUEST_TIMEOUT_MS = 25000;
 
