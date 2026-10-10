@@ -1,146 +1,243 @@
 
 const express = require("express");
 const cors = require("cors");
-const consumet = require("@consumet/extensions");
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
 
-const ANIME = consumet.ANIME || consumet.default?.ANIME;
+const ANILIST_URL = "https://graphql.anilist.co";
+const REQUEST_TIMEOUT_MS = 20000;
 
-if (!ANIME) {
-  throw new Error("Consumet ANIME providers were not found.");
-}
-
-console.log("Available anime providers:", Object.keys(ANIME));
-
-const providerName = process.env.ANIME_PROVIDER || "AnimeKai";
-const ProviderClass = ANIME[providerName];
-
-if (typeof ProviderClass !== "function") {
-  throw new Error(
-    "Provider " +
-      providerName +
-      " is unavailable. Available providers: " +
-      Object.keys(ANIME).join(", ")
+async function anilistRequest(query, variables) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    REQUEST_TIMEOUT_MS
   );
-}
-
-const animeProvider = new ProviderClass();
-
-console.log("Selected provider:", providerName);
-console.log("Initialized provider:", animeProvider.name);
-
-const REQUEST_TIMEOUT_MS = 25000;
-
-async function runWithTimeout(operation, label) {
-  let timer;
 
   try {
-    return await Promise.race([
-      Promise.resolve().then(operation),
-      new Promise((resolve, reject) => {
-        timer = setTimeout(() => {
-          reject(
-            new Error(
-              label +
-                " timed out after " +
-                REQUEST_TIMEOUT_MS +
-                "ms"
-            )
-          );
-        }, REQUEST_TIMEOUT_MS);
-      }),
-    ]);
+    const response = await fetch(ANILIST_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({ query, variables }),
+      signal: controller.signal,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data.errors) {
+      const message =
+        data.errors?.map((error) => error.message).join("; ") ||
+        "AniList request failed with status " + response.status;
+
+      throw new Error(message);
+    }
+
+    return data.data;
   } finally {
     clearTimeout(timer);
   }
 }
 
-function sendProviderError(res, label, error) {
-  console.error(
-    "[" + label + "] Provider failed:",
-    error && error.stack ? error.stack : error
-  );
+function cleanDescription(description) {
+  return (description || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .trim();
+}
 
-  return res.status(502).json({
-    error: label + " provider request failed.",
-    details: error && error.message
-      ? error.message
-      : "Unknown provider error",
-    provider: animeProvider.name || providerName,
-  });
+function mapAnime(media) {
+  return {
+    id: String(media.id),
+    title:
+      media.title?.english ||
+      media.title?.romaji ||
+      media.title?.native ||
+      "Unknown anime",
+    image:
+      media.coverImage?.extraLarge ||
+      media.coverImage?.large ||
+      "",
+    releaseDate: media.startDate?.year
+      ? String(media.startDate.year)
+      : undefined,
+    type: media.format || "UNKNOWN",
+  };
 }
 
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
-    message: "Anime Scraper Backend is running!",
-    provider: animeProvider.name || providerName,
-    availableProviders: Object.keys(ANIME),
+    message: "Anime metadata backend is running!",
+    provider: "AniList",
+    playbackAvailable: false,
   });
 });
 
 app.get("/anime/search/:query", async (req, res) => {
-  const query = req.params.query.trim();
+  const search = String(req.params.query || "").trim();
 
-  if (!query) {
+  if (!search) {
     return res.status(400).json({
       error: "Search query cannot be empty.",
     });
   }
 
-  console.log("[SEARCH] Started:", query);
+  const requestedFormat = String(
+    req.query.format || ""
+  ).toUpperCase();
+
+  const allowedFormats = [
+    "TV",
+    "TV_SHORT",
+    "MOVIE",
+    "SPECIAL",
+    "OVA",
+    "ONA",
+    "MUSIC",
+  ];
+
+  if (
+    requestedFormat &&
+    !allowedFormats.includes(requestedFormat)
+  ) {
+    return res.status(400).json({
+      error: "Invalid anime format.",
+      allowedFormats,
+    });
+  }
+
+  const query = `
+    query (
+      $search: String!
+      $page: Int!
+      $perPage: Int!
+      $format: [MediaFormat]
+    ) {
+      Page(page: $page, perPage: $perPage) {
+        media(
+          search: $search
+          type: ANIME
+          format: $format
+          sort: SEARCH_MATCH
+        ) {
+          id
+          title {
+            romaji
+            english
+            native
+          }
+          coverImage {
+            extraLarge
+            large
+          }
+          startDate {
+            year
+          }
+          format
+        }
+      }
+    }
+  `;
 
   try {
-    const results = await runWithTimeout(
-      () => animeProvider.search(query),
-      "Search " + query
-    );
+    const data = await anilistRequest(query, {
+      search,
+      page: 1,
+      perPage: 20,
+      format: requestedFormat ? [requestedFormat] : null,
+    });
 
-    console.log("[SEARCH] Successful:", query);
-    return res.json(results);
+    return res.json({
+      results: (data.Page.media || []).map(mapAnime),
+    });
   } catch (error) {
-    return sendProviderError(res, "SEARCH", error);
+    console.error("[SEARCH] AniList error:", error.message);
+
+    return res.status(502).json({
+      error: "Anime search failed.",
+      details: error.message,
+    });
   }
 });
 
 app.get("/anime/info/:id", async (req, res) => {
-  const id = req.params.id;
+  const id = Number(req.params.id);
 
-  console.log("[INFO] Started:", id);
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({
+      error: "Anime ID must be a positive integer.",
+    });
+  }
+
+  const query = `
+    query ($id: Int) {
+      Media(id: $id, type: ANIME) {
+        id
+        title {
+          romaji
+          english
+          native
+        }
+        description(asHtml: false)
+        coverImage {
+          extraLarge
+          large
+        }
+        startDate {
+          year
+        }
+        format
+        episodes
+      }
+    }
+  `;
 
   try {
-    const info = await runWithTimeout(
-      () => animeProvider.fetchAnimeInfo(id),
-      "Fetch anime info " + id
-    );
+    const data = await anilistRequest(query, { id });
+    const media = data.Media;
 
-    console.log("[INFO] Successful:", id);
-    return res.json(info);
+    if (!media) {
+      return res.status(404).json({
+        error: "Anime not found.",
+      });
+    }
+
+    return res.json({
+      ...mapAnime(media),
+      description: cleanDescription(media.description),
+      totalEpisodes: media.episodes ?? undefined,
+
+      // AniList provides metadata, not episode playback links.
+      episodes: [],
+    });
   } catch (error) {
-    return sendProviderError(res, "INFO", error);
+    console.error("[INFO] AniList error:", error.message);
+
+    return res.status(502).json({
+      error: "Failed to fetch anime details.",
+      details: error.message,
+    });
   }
 });
 
-app.get("/anime/watch/:episodeId", async (req, res) => {
-  const episodeId = req.params.episodeId;
-
-  console.log("[WATCH] Started:", episodeId);
-
-  try {
-    const streamInfo = await runWithTimeout(
-      () => animeProvider.fetchEpisodeSources(episodeId),
-      "Fetch episode sources " + episodeId
-    );
-
-    console.log("[WATCH] Successful:", episodeId);
-    return res.json(streamInfo);
-  } catch (error) {
-    return sendProviderError(res, "WATCH", error);
-  }
+app.get("/anime/watch/:episodeId", (req, res) => {
+  return res.status(501).json({
+    error: "Episode playback is not configured yet.",
+    message:
+      "Anime metadata is available, but a legitimate video source must be connected for playback.",
+  });
 });
 
 app.use((req, res) => {
@@ -150,20 +247,8 @@ app.use((req, res) => {
   });
 });
 
-app.use((error, req, res, next) => {
-  console.error("[SERVER] Unexpected error:", error);
-
-  if (res.headersSent) {
-    return next(error);
-  }
-
-  return res.status(500).json({
-    error: "Internal server error.",
-  });
-});
-
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("Server listening on port " + PORT);
+  console.log("Anime metadata backend listening on port " + PORT);
 });
