@@ -1,65 +1,133 @@
-const express = require('express');
-const cors = require('cors');
-const consumet = require('@consumet/extensions');
+
+const express = require("express");
+const cors = require("cors");
+const consumet = require("@consumet/extensions");
 
 const app = express();
-
-// Allow your React Native app to make requests to this server
 app.use(cors());
+app.use(express.json());
 
-// Safely locate the ANIME providers list
 const ANIME = consumet.ANIME || consumet.default?.ANIME;
 
-// Log available providers to the Render console for debugging
-console.log("Available Anime Providers:", Object.keys(ANIME || {}));
+if (!ANIME) {
+  throw new Error("Consumet did not expose its ANIME providers.");
+}
 
-// Smart Fallback: Use Hianime. If removed, try AnimePahe. If all else fails, force the first available provider.
-const ProviderClass = ANIME.Hianime || ANIME.AnimePahe || Object.values(ANIME)[0];
+console.log("Available anime providers:", Object.keys(ANIME));
+
+const providerName = process.env.ANIME_PROVIDER || "AnimePahe";
+const ProviderClass =
+  ANIME[providerName] ||
+  ANIME.AnimePahe ||
+  ANIME.Gogoanime ||
+  Object.values(ANIME).find((provider) => typeof provider === "function");
 
 if (!ProviderClass) {
-    console.error("FATAL ERROR: Could not find a valid Anime provider.");
+  throw new Error("No usable anime provider was found.");
 }
 
 const animeProvider = new ProviderClass();
-console.log("Successfully initialized provider:", animeProvider.name);
 
-// 1. Search Route (e.g., /anime/search/one%20piece)
-app.get('/anime/search/:query', async (req, res) => {
-    try {
-        const results = await animeProvider.search(req.params.query);
-        res.json(results);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to search anime.', details: error.message });
-    }
+console.log("Selected anime provider:", providerName);
+console.log("Initialized provider:", animeProvider.name);
+
+async function runWithTimeout(promise, label, ms = 25000) {
+  let timer;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} timed out after ${ms}ms`)),
+          ms
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    message: "Anime Scraper Backend is running!",
+    provider: animeProvider.name,
+  });
 });
 
-// 2. Info & Episodes Route (Gets all episodes for a specific anime ID)
-app.get('/anime/info/:id', async (req, res) => {
-    try {
-        const info = await animeProvider.fetchAnimeInfo(req.params.id);
-        res.json(info);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to fetch anime info.', details: error.message });
-    }
+app.get("/anime/search/:query", async (req, res) => {
+  const query = req.params.query;
+  console.log(`[SEARCH] Started: ${query}`);
+
+  try {
+    const results = await runWithTimeout(
+      animeProvider.search(query),
+      `Search "${query}"`
+    );
+
+    console.log(
+      `[SEARCH] Success: ${query}; result count: ${
+        Array.isArray(results?.results)
+          ? results.results.length
+          : Array.isArray(results)
+            ? results.length
+            : "unknown"
+      }`
+    );
+
+    res.json(results);
+  } catch (error) {
+    console.error("[SEARCH] Provider failed:", error?.stack || error);
+
+    res.status(502).json({
+      error: "Anime search provider failed.",
+      details: error?.message || "Unknown provider error",
+      provider: animeProvider.name || providerName,
+    });
+  }
 });
 
-// 3. Watch Route (Extracts the direct .m3u8 stream link by episode ID)
-app.get('/anime/watch/:episodeId', async (req, res) => {
-    try {
-        const streamInfo = await animeProvider.fetchEpisodeSources(req.params.episodeId);
-        res.json(streamInfo);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to extract video stream.', details: error.message });
-    }
+app.get("/anime/info/:id", async (req, res) => {
+  try {
+    const info = await runWithTimeout(
+      animeProvider.fetchAnimeInfo(req.params.id),
+      "Fetch anime info"
+    );
+
+    res.json(info);
+  } catch (error) {
+    console.error("[INFO] Provider failed:", error?.stack || error);
+
+    res.status(502).json({
+      error: "Failed to fetch anime info.",
+      details: error?.message || "Unknown provider error",
+    });
+  }
 });
 
-// Health check to ensure the server is awake
-app.get('/', (req, res) => {
-    res.send('Anime Scraper Backend is running and ready!');
+app.get("/anime/watch/:episodeId", async (req, res) => {
+  try {
+    const streamInfo = await runWithTimeout(
+      animeProvider.fetchEpisodeSources(req.params.episodeId),
+      "Fetch episode sources"
+    );
+
+    console.log("[WATCH] Stream sources fetched.");
+    res.json(streamInfo);
+  } catch (error) {
+    console.error("[WATCH] Provider failed:", error?.stack || error);
+
+    res.status(502).json({
+      error: "Failed to extract video stream.",
+      details: error?.message || "Unknown provider error",
+    });
+  }
 });
 
-// Render dynamically assigns a port
 const PORT = process.env.PORT || 3000;
+
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+  console.log(`Server listening on port ${PORT}`);
 });
