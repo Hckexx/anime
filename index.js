@@ -1,13 +1,14 @@
-import express from 'express';
-import cors from 'cors';
-import { ANIME } from '@consumet/extensions';
+const express = require('express');
+const cors = require('cors');
+const { ANIME } = require('@consumet/extensions');
 
 const app = express();
 
 // Allow your React Native app to make requests to this server
 app.use(cors());
 
-// Initialize the Gogoanime scraper (You can also change this to Zoro/Zhiend later)
+// Initialize the Gogoanime scraper
+// (Note: If Gogoanime ever acts up in the future, you can simply change this to "new ANIME.Zoro()")
 const animeProvider = new ANIME.Gogoanime();
 
 // 1. Search Route (e.g., /anime/search/one%20piece)
@@ -45,7 +46,7 @@ app.get('/', (req, res) => {
     res.send('Anime Scraper Backend is running and ready!');
 });
 
-// Render dynamically assigns a port, or it defaults to 3000 locally
+// Render dynamically assigns a port
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
