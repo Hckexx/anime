@@ -15,12 +15,17 @@ if (!ANIME) {
 
 console.log("Available anime providers:", Object.keys(ANIME));
 
-const providerName = process.env.ANIME_PROVIDER || "AnimePahe";
+
+const providerName = process.env.ANIME_PROVIDER || "Gogoanime";
+
 const ProviderClass =
   ANIME[providerName] ||
-  ANIME.AnimePahe ||
   ANIME.Gogoanime ||
-  Object.values(ANIME).find((provider) => typeof provider === "function");
+  ANIME.AnimePahe ||
+  Object.values(ANIME).find(
+    (provider) => typeof provider === "function"
+  );
+
 
 if (!ProviderClass) {
   throw new Error("No usable anime provider was found.");
