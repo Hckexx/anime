@@ -13,8 +13,8 @@ const ANIME = consumet.ANIME || consumet.default?.ANIME;
 // Log available providers to the Render console for debugging
 console.log("Available Anime Providers:", Object.keys(ANIME || {}));
 
-// Smart Fallback: Try Gogoanime. If it was renamed, use Anitaku. If that fails, use Zoro.
-const ProviderClass = ANIME.Gogoanime || ANIME.Anitaku || ANIME.Zoro;
+// Smart Fallback: Use Hianime. If removed, try AnimePahe. If all else fails, force the first available provider.
+const ProviderClass = ANIME.Hianime || ANIME.AnimePahe || Object.values(ANIME)[0];
 
 if (!ProviderClass) {
     console.error("FATAL ERROR: Could not find a valid Anime provider.");
