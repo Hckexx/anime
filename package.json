@@ -3,12 +3,11 @@
   "version": "1.0.0",
   "description": "Minimal Anime Scraper API for Render",
   "main": "index.js",
-  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@consumet/extensions": "^1.5.1",
+    "@consumet/extensions": "^1.8.8",
     "cors": "^2.8.5",
     "express": "^4.19.2"
   }
